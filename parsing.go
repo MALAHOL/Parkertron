@@ -61,7 +61,7 @@ func parseImage(remoteURL string) (imageText string, err error) {
 	defer client.Close()
 
 	client.SetImage("/tmp/" + fileName)
-	client.SetLanguage("rus", "eng")
+	client.SetLanguage("ru", "eng")
 	w, h := getImageDimension("/tmp/" + fileName)
 	Log.Debug("Image width is " + strconv.Itoa(h))
 	Log.Debug("Image height is " + strconv.Itoa(w))
