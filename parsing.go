@@ -58,10 +58,10 @@ func parseImage(remoteURL string) (imageText string, err error) {
 	Log.Debug("File is an image")
 
 	client := gosseract.NewClient()
+	client.SetLanguage("eng", "rus")
 	defer client.Close()
 
 	client.SetImage("/tmp/" + fileName)
-	client.SetLanguage(eng, rus)
 	w, h := getImageDimension("/tmp/" + fileName)
 	Log.Debug("Image width is " + strconv.Itoa(h))
 	Log.Debug("Image height is " + strconv.Itoa(w))
