@@ -58,7 +58,7 @@ func parseImage(remoteURL string) (imageText string, err error) {
 	Log.Debug("File is an image")
 
 	client := gosseract.NewClient()
-	client.SetLanguage("rus")
+	client.SetLanguage("eng")
 	defer client.Close()
 
 	client.SetImage("/tmp/" + fileName)
