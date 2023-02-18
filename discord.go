@@ -22,7 +22,7 @@ var (
 // the "ready" event from Discord.
 func readyDiscord(dg *discordgo.Session, event *discordgo.Ready, game string) {
 	// if there is an error setting the game log and return
-	if err := dg.UpdateStatus(0, game); err != nil {
+	if err := dg.UpdateGameStatus(0, game); err != nil {
 		Log.Fatalf("error setting game: %s", err)
 		return
 	}
@@ -39,6 +39,7 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 	// data to send to discord
 	var response []string
 	var reaction []string
+	var chanID string
 
 	bot, err := dg.User("@me")
 	if err != nil {
@@ -58,18 +59,22 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 		return
 	}
 
+	if channel.Type == 11 {
+		chanID = channel.ParentID
+	} else {
+		chanID = m.ChannelID
+	}
+
 	// get all the configs
 	// requires channel info we get from the channel info above
 	prefix := getPrefix("discord", botName, channel.GuildID)
-	channelCommands := getCommands("discord", botName, channel.GuildID, m.ChannelID)
-	channelKeywords := getKeywords("discord", botName, channel.GuildID, m.ChannelID)
-	channelParsing := getParsing("discord", botName, channel.GuildID, m.ChannelID)
+	channelCommands := getCommands("discord", botName, channel.GuildID, chanID)
+	channelKeywords := getKeywords("discord", botName, channel.GuildID, chanID)
+	channelPatterns := getRegexPatterns("discord", botName, channel.GuildID, chanID)
+	channelParsing := getParsing("discord", botName, channel.GuildID, chanID)
 	serverFilter := getFilter("discord", botName, channel.GuildID)
 
 	Log.Debugf("prefix: %s", prefix)
-
-	// bot level configs for log reading
-	maxLogs, logResponse, logReaction, allowIP := getBotParseConfig()
 
 	// if the channel is a DM
 	if channel.Type == 1 {
@@ -85,7 +90,8 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 		return
 	}
 
-	// Log.Debugf("all channels %s", getChannels("discord", botName, channel.GuildID))
+	// bot level configs for log reading
+	maxLogs, logResponse, logReaction, allowIP := getBotParseConfig()
 
 	//filter logic
 	Log.Debug("filtering messages")
@@ -111,7 +117,7 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 
 	// if the channel isn't in a group drop the message
 	Log.Debugf("checking channels")
-	if !contains(getChannels("discord", botName, channel.GuildID), m.ChannelID) {
+	if !contains(getChannels("discord", botName, channel.GuildID), chanID) {
 		Log.Debugf("channel not found")
 		return
 	}
@@ -119,7 +125,7 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 	Log.Debugf("checking blacklist")
 
 	// drop messages from blacklisted users
-	for _, user := range getBlacklist("discord", botName, channel.GuildID, m.ChannelID) {
+	for _, user := range getBlacklist("discord", botName, channel.GuildID, chanID) {
 		if user == m.Author.ID {
 			Log.Debugf("user %s is blacklisted username is %s", m.Author.ID, m.Author.Username)
 			return
@@ -193,7 +199,7 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 	// Log.Debug(allURLS)
 	Log.Debugf("checking mentions")
 	if len(m.Mentions) != 0 {
-		ping, mention := getMentions("discord", botName, channel.GuildID, m.ChannelID)
+		ping, mention := getMentions("discord", botName, channel.GuildID, chanID)
 		if m.Mentions[0].ID == bot.ID && strings.Replace(m.Content, "<@!"+dg.State.User.ID+">", "", -1) == "" {
 			Log.Debugf("bot was pinged")
 			response = ping.Response
@@ -222,8 +228,13 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 
 			}
 		} else {
+			// regex -- priority over keywords
+			response, reaction = parseRegex(m.Content, botName, channelPatterns, channelParsing)
+
 			// keyword
-			response, reaction = parseKeyword(m.Content, botName, channelKeywords, channelParsing)
+			if response == nil {
+				response, reaction = parseKeyword(m.Content, botName, channelKeywords, channelParsing)
+			}
 		}
 	}
 
@@ -286,6 +297,18 @@ func discordMessageHandler(dg *discordgo.Session, m *discordgo.MessageCreate, bo
 	if err := sendDiscordReaction(dg, m.ChannelID, m.ID, reaction); err != nil {
 		Log.Error(err)
 	}
+}
+
+// This function will be called (due to AddHandler) every time a new
+// thread is created on any channel that the authenticated bot has access to.
+func discordNewThreadHandler(dg *discordgo.Session, m *discordgo.ThreadCreate, botName string) {
+
+}
+
+// This function will be called (due to AddHandler) every time a new
+// thread is created on any channel that the authenticated bot has access to.
+func discordDelThreadHandler(dg *discordgo.Session, m *discordgo.ThreadDelete, botName string) {
+
 }
 
 // kick a user and log it to a channel if configured
@@ -415,9 +438,22 @@ func sendDiscordMessage(dg *discordgo.Session, channelID, authorID, prefix strin
 
 // send a reaction to a message
 func sendDiscordReaction(dg *discordgo.Session, channelID string, messageID string, reactionArray []string) (err error) {
-	// if there is no reaction to sen just return
-	if len(reactionArray) == 0 {
+	// if there is no reaction to send just return
+	if len(reactionArray) == 0 || len(reactionArray) == 1 && reactionArray[0] == "" {
 		return
+	}
+
+	var hasReact bool
+
+	for _, reaction := range reactionArray {
+		if reaction != "" {
+			hasReact = true
+			break
+		}
+	}
+
+	if !hasReact {
+		return nil
 	}
 
 	for _, reaction := range reactionArray {
@@ -505,6 +541,18 @@ func startDiscordBotConnection(discordConfig discordBot) {
 	for range discordConfig.Servers {
 		dg.AddHandler(func(dg *discordgo.Session, event *discordgo.MessageCreate) {
 			discordMessageHandler(dg, event, discordConfig.BotName)
+		})
+	}
+
+	for range discordConfig.Servers {
+		dg.AddHandler(func(dg *discordgo.Session, event *discordgo.ThreadCreate) {
+			discordNewThreadHandler(dg, event, discordConfig.BotName)
+		})
+	}
+
+	for range discordConfig.Servers {
+		dg.AddHandler(func(dg *discordgo.Session, event *discordgo.ThreadDelete) {
+			discordDelThreadHandler(dg, event, discordConfig.BotName)
 		})
 	}
 
